@@ -1,0 +1,290 @@
+\documentclass[10pt,a4paper,twocolumn]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{hyperref}
+\usepackage[sort, numbers]{natbib}
+\usepackage{parskip}
+
+\title{Making Anti Evil Maid protection of Qubes OS resistant against shoulder
+surfing and video surveillance}
+\author{Patrik Hagara}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+  \noindent
+  Observing the user during early boot should not be sufficient to defeatt he
+  protection offered by Anti Evil Maid. Possible avenues for improvement are
+  explored and a solution introduced for both high-risk users, leveraging three
+  extra devices to increase multistage evil maid attack resistance, and a much
+  simpler scheme for users whose threat model does not include such multistage
+  attacks. Detailed time line is put forward for implementing this Google
+  Summer of Code proposal.
+\end{abstract}
+
+
+\section{Introduction}
+
+Anti Evil Maid (AEM) is an opt-in feature of the Qubes OS \cite{qubes-homepage}
+project aiming to provide resistance against so called evil maid type of
+security circumvention attacks, when an attacker has physical access to target
+computer.
+
+The current implementation of AEM protection in Qubes OS does not offer any
+protection whatsoever against shoulder surfing or video surveillance based
+attacks (referred to as "observation attacks" throughout this document), as
+both the static trusted boot secret text or image unsealed by the Trusted
+Platform Module (TPM) and the disk encryption passphrase are seen in the clear
+on the screen or keyboard, respectively. This allows an evil maid attacker to
+either modify the boot process and insert a malicious payload while still
+showing the right static secret or to trivially decrypt computer storage using
+captured passphrase.
+
+This Google Summer of Code (GSoC) project aims to reduce the impact of
+observation attacks by changing the way TPM is used for machine to user
+authentication from simple visual static secret verification to a method
+resistant to such attacks. Similarly, the user to machine authentication is
+upgraded from a simple passphrase to two factor authentication (2FA) so that an
+attacker knowing only a passphrase cannot compromise the system.
+
+Given the unique security properties and capabilities of TPM devices, multiple
+possible avenues for machine to user authentication present themselves. For
+instance, the TPM can be used to unseal a secret seed for time based one time
+passphrase (TOTP) generator, a six digit output of which the user would verify
+on a separate 2FA device (perhaps a closely guarded smartphone with TOTP
+application). As for the options of user to machine authentication, TPM-sealed
+and passphrase-protected Linux Unified Key Setup (LUKS) key files could be
+used. An attacker would then have to both know the passphrase and obtain a copy
+of the key file itself, which would be again stored on a small device the user
+always carries with them and plugs into the computer only after a verified
+trusted boot.
+
+Additionally to the GSoC project idea \cite{gsoc-proj-ideas} written by the
+Qubes OS team, this proposal strives to also provide the best possible user
+experience (UX) for users whose threat model does not include multistage
+software based evil maid attacks.
+
+
+\section{Project goals}
+
+The main goal of this GSoC project is to substantially reduce the impact of
+observation attacks against AEM-enabled Qubes OS installations while not
+unnecessarily increasing the user perceived complexity of AEM boot process.
+This goal will be achieved by implementing support for and documenting opt-in
+machine to user authentication mechanism leveraging Intel Trusted Execution
+Technology (TXT) Dynamic Root of Trust Measurement (DRTM) and TPM assisted
+measured boot to unseal a LUKS key file stored on removable media.  The LUKS
+key file will be protected by an additional passphrase in order to provide user
+to machine authentication mechanism. Fallback support must also be developed to
+allow recovery in case of LUKS key file loss or unavailability.
+
+Since the primary goal implementation will not be able to fully protect users
+whose threat model includes multistage software based evil maid attacks, the
+following features listed should also be implemented either during the three
+month GSoC work period (should the time permit) or at any point before or after
+the event.
+
+Stretch goals are to implement, document and provide fallback options for:
+\begin{itemize}
+  \item opt-in usage of TOTP tokens for machine authentication
+  \item opt-in storage of TPM-sealed and passphrase-protected LUKS key file on
+    a secondary AEM media (inserted only after TOTP code verification)
+\end{itemize}
+
+Both of the above features trade ease of use for increased resistance against
+software based multistage evil maid attacks. However, while not completely
+preventing such attacks, they do extend the attack surface by requiring
+multiple devices which can be independently copied, altered or seized by an
+attacker. Thus, potential users need to carefully evaluate which of the AEM
+setup options are most suited for their particular threat model, if any.
+
+Deliverables (applicable to both primary and stretch goals):
+\begin{itemize}
+  \item AEM packages with listed features implemented
+  \item documentation for enrolling and upgrading users
+\end{itemize}
+
+Outstanding issues (tracked in qubes-issues GitHub repository
+\cite{qubes-issues}) to be resolved by this project:
+\begin{itemize}
+  \item Option to use AEM secret as LUKS key file \cite{issue-1979}
+\end{itemize}
+
+
+\section{Implementation}
+
+Since Qubes OS aims to be "a reasonably secure operating system" with an
+emphasis on being user friendly, the primary goal implementation aims to
+deliver the best possible UX for users whose threat model does not include high
+enough probability of multistage evil maid attacks. Pros and cons of this
+choice were discussed \cite{aem-discussion-thread} on the qubes-devel mailing
+list. The workflow shall be as follows:
+\begin{enumerate}
+  \item user inserts their closely guarded AEM boot media containing tboot
+    bootloader, Xen hypervisor, dom0 Linux kernel, initrd and associated
+    configuration along with TPM-sealed and passphrase-protected LUKS key file
+    and makes computer boot from it
+  \item measured boot is performed and then, assuming neither the computer
+    firmware nor software has been maliciously modified, the Platform
+    Configuration Register (PCR) values inside the TPM will match the state
+    needed to unseal the LUKS key file
+  \item once the key file is unsealed, user is prompted to enter their
+    passphrase in order to decrypt the LUKS key file
+  \item assuming the passphrase supplied by user was able to decrypt the key
+    file, internal computer drive is unlocked and computer continues booting
+    the OS
+\end{enumerate}
+
+Workflow of the stretch goal implementation which is able to resist some of the
+possible multistage evil maid attacks is slightly more involved:
+\begin{enumerate}
+  \item user inserts their closely guarded AEM boot media into the computer and
+    makes computer boot from it
+  \item bootloader performs a measured boot, attempts to unseal TOTP seed using
+    TPM and, if successful, displays a derived six digit code
+  \item user checks whether displayed TOTP code matches the one computed by
+    their 2FA device
+  \item if and only if the TOTP codes match, user can safely insert secondary
+    AEM storage media containing the TPM-sealed, passphrase-encrypted LUKS key
+    file
+  \item the key file is automatically unsealed by TPM
+  \item user is prompted for key file decryption passphrase
+  \item assuming correct passphrase was entered and the key file is able to
+    unlock LUKS-protected internal disk, the OS continues booting
+\end{enumerate}
+
+In both cases, an attacker observing both screen and keyboard during early boot
+cannot mount an evil maid attack without either:
+\begin{itemize}
+  \item breaking the measured boot via a vulnerability in Intel TXT, TPM or
+    another vital part of the trusted boot process
+  \item copying or seizing the AEM boot media and the LUKS key file (possibly
+    stored on separate media), enabling the attacker to access encrypted
+    computer contents upon seizing it
+\end{itemize}
+
+Applicable to the stretch goal implementation only, following additional attack
+is possible:
+\begin{itemize}
+  \item gaining access to or modifying the TOTP seed, changing time and/or date
+    of the 2FA device or replacing the whole device, allowing exfiltration of
+    AEM boot media contents and LUKS key file, thus enabling the attacker to
+    seize the computer and access its encrypted contents
+\end{itemize}
+
+If using TOTP token for machine authentication, user should take care to first
+memorize the six digit code shown on the computer screen and only then take out
+their 2FA device to generate a verification code. This avoids a possible attack
+whereas an attacker is able to remotely alter computer screen contents in
+(near) real time.
+
+Please note that AEM protection must be installed on removable media in all
+cases as observation attacks would capture the TPM Storage Root Key (SRK)
+passphrase and make it trivial for an attacker to unseal the LUKS key file,
+should they come to possess it. Combined with observing the passphrase used for
+the key file, the attacker will be able to unlock the encrypted storage of the
+target computer upon seizing it (simply copying contents of the internal
+computer drive is not enough as possessing the TPM chip is still required for
+key file unsealing).
+
+
+\section{Timeline}
+
+\begin{description}
+  \item[May 30 - Jun 6:] research and implement a proof of concept (PoC) for
+    generating, enrolling, passphrase-protecting and TPM-sealing a LUKS key
+    file
+  \item[Jun 6 - Jun 13:] merge the above PoC into AEM installer, rebuild the
+    package and test
+  \item[Jun 13 - Jun 27:] implement PoC for disk unlocking using a TPM-sealed,
+    passphrase-protected LUKS key file; research how to integrate it into
+    Dracut initrd and Plymouth; merge the PoC into AEM, rebuild the package and
+    test; first evaluation period starts
+  \item[Jun 27 - Jul 4:] implement fallback options; merge fallback option
+    changes into AEM package, rebuild and test; first evaluation period ends
+  \item[Jul 4 - Jul 11:] document enrollment and upgrade procedures; rebuild
+    the AEM package to include documentation
+  \item[Jul 11 - Jul 18:] engage the community in both reviewing
+    documentation/code and testing the implementation; fix any bugs found
+  \item[Jul 18 - Jul 24:] implement PoC for generating/importing TOTP seed,
+    transferring generated seed into 2FA device, TPM-sealing the seed and
+    generating TOTP codes
+  \item[Jul 24 - Jul 28:] second evaluation period
+  \item[Jul 28 - Aug 4:] implement fallback options for TOTP, displaying and
+    refreshing the TOTP code on Plymouth boot screen; merge that into AEM
+    package, rebuild, test
+  \item[Aug 4 - Aug 11:] implement support for secondary AEM device holding
+    LUKS key file; integrate it into the AEM package, rebuild, test
+  \item[Aug 11 - Aug 21:] implement fallback options for secondary AEM device;
+    merge it into the AEM package, rebuild, test; document enrollment and
+    upgrade steps
+  \item[Aug 21 onward:] engage the community in both reviewing
+    documentation/code and testing the implementation; fix bugs found by the
+    community
+\end{description}
+
+Although currently having a twenty hours per week internship, I am confident I
+will be able to dedicate another thirty to forty hours per week to GSoC, as
+that would be roughly equal to my schedule during the school year. However,
+should this be deemed a concern, I could suspend my internship for the three
+month GSoC working period. No other commitments scheduled during the relevant
+time frame.
+
+I will be sending progress updates to the qubes-devel mailing list, plus weekly
+formal summaries.
+
+
+\section{About me}
+
+Second year undergraduate in Information Security at the Faculty of Electrical
+Engineering and Communication, Brno University of Technology.  Previously
+studied Computer Networks and Communication for two academic years at the
+Faculty of Informatics, Masaryk University.
+
+Passionate about free and open-source software, computer security and digital
+privacy. Started coding at the age of twelve, presently focusing on Python.
+Installed Qubes OS in mid-2015 and began using it as a primary OS shortly
+thereafter. 
+
+Almost four years of quality engineering internship at Red Hat. Comfortable
+working both independently and as part of a team, large code bases are fine,
+too. Management distance of eight time zones has never been an issue, neither
+has the fact of not being a native English speaker.
+
+Not submitting GSoC proposal to any other participating organization.
+
+Living in Brno, Czech Republic (UTC+2 / CEST time zone during the GSoC event).
+
+Contact information:
+\begin{itemize}
+  \item name: Patrik Hagara
+  \item e-mail: \href{mailto:patrihagar@gmail.com}{patrihagar@gmail.com}
+  \item GPG: \texttt{0x5C1E71DF031F9AE5}
+  \item GitHub \cite{my-github} and LinkedIn \cite{my-linkedin}
+\end{itemize}
+
+
+\def\bibfont{\footnotesize}
+\begin{thebibliography}{9}
+  \bibitem{qubes-homepage}
+    \url{https://www.qubes-os.org/}
+  \bibitem{gsoc-proj-ideas}
+    \url{https://www.qubes-os.org/gsoc/}
+  \bibitem{qubes-issues}
+    \url{https://github.com/QubesOS/qubes-issues}
+  \bibitem{issue-1979}
+    \url{https://github.com/QubesOS/qubes-issues/issues/1979}
+  \bibitem{aem-discussion-thread}
+    \url{https://groups.google.com/d/topic/qubes-devel/0kOgeiTstJ8/discussion}
+  \bibitem{my-github}
+    \url{https://github.com/phagara}
+  \bibitem{my-linkedin}
+    \url{https://www.linkedin.com/in/patrikhagara}
+\end{thebibliography}
+
+\end{document}
